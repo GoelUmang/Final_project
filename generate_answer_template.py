@@ -391,45 +391,123 @@ def load_questions(path: Path) -> List[Dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError("Input file must contain a list of question objects.")
     return data
+# def build_answers(questions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+#     """
+#     My agent loop:
+#     - 1 API call per question
+#     - no external tools
+#     - produces a string in {"output": "..."} format per question
+#     """
+#     # Initialize an empty list to store all generated model outputs
+#     answers: List[Dict[str, str]] = []
+#     start = time.time()
+
+#     # Iterate through each question object while keeping track of question index
+#     for idx, question in enumerate(questions, start=1):
+#         # Extract the question text from the JSON dictionary
+#         # Defaults to an empty string if "input" key is missing
+#         qtext = question.get("input", "")
+
+#         # Heuristic: most dataset MCQs contain "A." "B." "C." "D."
+#         # This simple rule helps the model distinguish between open-ended and MCQ formats
+#         multiple_choice = all(opt in qtext for opt in ["A.", "B.", "C.", "D."])
+
+#         # Call the LLM with the question text
+#         # The flag multiple_choice hints to the model how to format its reasoning/answering approach
+#         prediction = call_llm(qtext, multiple_choice=multiple_choice)
+
+#         # Store the model output in the required {"output": "..."} structure
+#         answers.append({"output": prediction})
+
+#         # Progress every 25 questions
+#         if idx % 25 == 0:
+#             elapsed = time.time() - start
+#             rate = idx / elapsed if elapsed > 0 else 0
+#             remaining = (len(questions) - idx) / rate if rate > 0 else float("inf")
+#             print(f"[{idx}/{len(questions)}] ~{rate:.2f} q/s, ETA ~{remaining/60:.1f} min")
+
+#     # Return the full list of predictions to be written into the output JSON
+#     return answers
+
+
 def build_answers(questions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """
-    My agent loop:
-    - 1 API call per question
-    - no external tools
-    - produces a string in {"output": "..."} format per question
-    """
-    # Initialize an empty list to store all generated model outputs
+    # Main output list for autograder-compatible entries
     answers: List[Dict[str, str]] = []
-    start = time.time()
+    start = time.time()  # Track runtime for progress estimation
 
-    # Iterate through each question object while keeping track of question index
     for idx, question in enumerate(questions, start=1):
-        # Extract the question text from the JSON dictionary
-        # Defaults to an empty string if "input" key is missing
-        qtext = question.get("input", "")
+        qtext = question.get("input", "")       # Raw question text
+        qtype = classify_question(qtext)        # Route question by type (MCQ/math/etc.)
 
-        # Heuristic: most dataset MCQs contain "A." "B." "C." "D."
-        # This simple rule helps the model distinguish between open-ended and MCQ formats
-        multiple_choice = all(opt in qtext for opt in ["A.", "B.", "C.", "D."])
+        # Technique: try deterministic extraction first for context questions
+        # If the answer is explicitly stated in the context, this avoids an LLM call.
+        if qtype == "context_qa":
+            extracted = extract_from_context(qtext)
+            if extracted is not None:
+                prediction = normalize_output(extracted, qtype)
+                answers.append({"output": prediction})
+                CACHE[qtext] = prediction  # Cache deterministic answers too
+                continue  # Skip LLM invocation
 
-        # Call the LLM with the question text
-        # The flag multiple_choice hints to the model how to format its reasoning/answering approach
-        prediction = call_llm(qtext, multiple_choice=multiple_choice)
+        # Build strict formatting instruction depending on qtype
+        system = build_system_prompt(qtype)
 
-        # Store the model output in the required {"output": "..."} structure
+        # Token budgets by type (faster + reduces rambling)
+        # Small token budgets enforce concise, autograder-safe answers.
+        if qtype in {"mcq", "yesno"}:
+            max_tokens = 8
+        elif qtype == "math":
+            max_tokens = 64
+        else:
+            max_tokens = 128  # Open/context tasks occasionally need a bit more
+
+        # First LLM call using the clean system prompt and token budget
+        raw = call_llm(qtext, system=system, max_tokens=max_tokens)
+        prediction = normalize_output(raw, qtype)
+
+        # Optional second call ONLY when output format is bad
+        # This prevents leaking explanations, long text, or malformed MCQ letters.
+        if looks_suspicious(prediction, qtype):
+            fix_system = (
+                "Strict formatting required. Output ONLY the final answer. No extra words."
+            )
+            # Tighten constraints if MCQ/Yes-No
+            if qtype == "mcq":
+                fix_system += " Output ONLY one letter: A, B, C, or D."
+            elif qtype == "yesno":
+                fix_system += " Output ONLY 'Yes' or 'No'."
+
+            # Provide the previous output to steer correction
+            fix_prompt = (
+                f"Question:\n{qtext}\n\n"
+                f"Your previous output:\n{prediction}\n\n"
+                "Return ONLY the final answer in the correct format."
+            )
+
+            # Second attempt to fix formatting
+            raw2 = call_llm(fix_prompt, system=fix_system, max_tokens=max_tokens)
+            prediction = normalize_output(raw2, qtype)
+
+        # Store final answer
         answers.append({"output": prediction})
+        CACHE[qtext] = prediction  # Store in cache for future reuse
 
-        # Progress every 25 questions
+        # Save cache occasionally (so I can resume)
+        # Helpful when running hundreds or thousands of questions.
+        if idx % 100 == 0:
+            save_cache()
+
+        # Progress
+        # Estimates questions/sec and ETA until completion.
         if idx % 25 == 0:
             elapsed = time.time() - start
             rate = idx / elapsed if elapsed > 0 else 0
             remaining = (len(questions) - idx) / rate if rate > 0 else float("inf")
-            print(f"[{idx}/{len(questions)}] ~{rate:.2f} q/s, ETA ~{remaining/60:.1f} min")
+            print(f"[{idx}/{len(questions)}] ~{rate:.2f} q/s, ETA ~{remaining/60:.1f} min", flush=True)
 
-    # Return the full list of predictions to be written into the output JSON
+    # final cache save
+    save_cache()
     return answers
-
-
 
 def validate_results(
     questions: List[Dict[str, Any]], answers: List[Dict[str, Any]]
@@ -454,6 +532,7 @@ def validate_results(
 
 def main() -> None:
     questions = load_questions(INPUT_PATH)
+    load_cache()
     print(f"Loaded {len(questions)} questions. Starting inference...", flush=True)
 
     answers = build_answers(questions)
