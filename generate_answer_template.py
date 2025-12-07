@@ -51,6 +51,95 @@ def save_cache() -> None:
     except Exception:
         pass
 
+def is_mcq(q: str) -> bool:
+    q = q.strip()
+
+    # A./B./C./D. format
+    # This checks for classical multiple-choice patterns where each option begins with “A.” “B.” etc.
+    dot = all(opt in q for opt in ["A.", "B.", "C.", "D."])
+
+    # Options: (A) (B) format
+    # This detects datasets with “Options:” followed by choices labeled with parentheses.
+    paren = ("Options" in q) and ("(A)" in q or "(B)" in q or "(C)" in q)
+
+    # Return True if the question uses *any* recognizable MCQ pattern
+    return dot or paren
+
+
+def classify_question(q: str) -> str:
+    """
+    Better routing across dataset types.
+    Returns: mcq | yesno | context_qa | math | open
+
+    This function detects the *type* of question so the system prompt
+    can ensure the model outputs answers in the correct format.
+    """
+    t = q.strip()
+    low = t.lower()
+
+    # Yes/No plausibility / entailment-type prompts
+    # These patterns often belong to datasets where the answer is strictly Yes or No.
+    if low.startswith("is the following sentence plausible"):
+        return "yesno"
+    if low.startswith("is ") and "facts:" in low:
+        return "yesno"
+    if low.startswith("does ") and "facts:" in low:
+        return "yesno"
+
+    # Context-bounded QA (answer usually stated in the context)
+    # Many reasoning datasets embed the answer in a 'Context:' field.
+    if "context:" in low or "facts:" in low:
+        return "context_qa"
+
+    # Multiple choice (includes “Find a movie similar to … Options: …” etc.)
+    # Uses the helper is_mcq() to capture several MCQ formats.
+    if is_mcq(t):
+        return "mcq"
+
+    # Math-ish word problems (multilingual-friendly signals)
+    # These keywords catch numerical/computation-heavy tasks across languages.
+    math_signals = [
+        "$", "%", "percent", "commission", "calculate", "how many", "total",
+        "weigh", "pieces", "times as much", "fewer than", "every week", "average",
+        "¿cuánt", "ovejas", "dólar", "多少钱", "多少", "总共", "每块"
+    ]
+    # If any math keyword appears, route to numeric-answer mode
+    if any(sig in low for sig in math_signals):
+        return "math"
+
+    # Default fallback: open-ended short-text questions
+    return "open"
+
+
+def build_system_prompt(qtype: str) -> str:
+    """
+    Prompts must enforce: output is ONLY the final answer string.
+
+    This function defines strict output formats for each question type
+    to match autograder requirements.
+    """
+    if qtype == "mcq":
+        # Ensures no explanation leaks—only the final MCQ letter is allowed.
+        return "Output ONLY one letter: A, B, C, or D. No other text."
+
+    if qtype == "yesno":
+        # Prevents models from outputting long answers—keeps output binary.
+        return "Output ONLY 'Yes' or 'No'. No other text."
+
+    if qtype == "context_qa":
+        # Forces grounding strictly in provided context, not world knowledge.
+        return (
+            "Use ONLY the provided Context/Facts in the input. "
+            "If the answer is not explicitly stated, output 'N/A'. "
+            "Output ONLY the final answer (no explanation)."
+        )
+
+    if qtype == "math":
+        # Ensures numeric correctness by forbidding reasoning steps.
+        return "Output ONLY the final numeric answer (no steps, no explanation)."
+
+    # Default case: short free-text answers permitted, but no reasoning.
+    return "Output ONLY the final answer as plain text (one short line). No reasoning."
 
 
 def call_llm(prompt: str, multiple_choice: bool) -> str:
