@@ -17,6 +17,8 @@ from typing import Any, Dict, List
 import os
 import re
 import requests
+import time
+
 
 # ---- Provided API settings ----
 # I keep these configurable via env vars so the TA can run it easily.
@@ -95,6 +97,7 @@ def build_answers(questions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
     # Initialize an empty list to store all generated model outputs
     answers: List[Dict[str, str]] = []
+    start = time.time()
 
     # Iterate through each question object while keeping track of question index
     for idx, question in enumerate(questions, start=1):
@@ -112,6 +115,13 @@ def build_answers(questions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
         # Store the model output in the required {"output": "..."} structure
         answers.append({"output": prediction})
+
+        # Progress every 50 questions
+    if idx % 50 == 0:
+        elapsed = time.time() - start
+        rate = idx / elapsed if elapsed > 0 else 0
+        remaining = (len(questions) - idx) / rate if rate > 0 else float("inf")
+        print(f"[{idx}/{len(questions)}] ~{rate:.2f} q/s, ETA ~{remaining/60:.1f} min")
 
     # Return the full list of predictions to be written into the output JSON
     return answers
