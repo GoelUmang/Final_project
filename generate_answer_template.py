@@ -29,6 +29,8 @@ MODEL_NAME = os.getenv("MODEL_NAME", "bens_model")
 INPUT_PATH = Path("cse_476_final_project_test_data.json")
 OUTPUT_PATH = Path("cse_476_final_project_answers.json")
 
+
+
 def call_llm(prompt: str, multiple_choice: bool) -> str:
     """
     Calls ONLY the course-provided OpenAI-style API endpoint.
@@ -48,7 +50,7 @@ def call_llm(prompt: str, multiple_choice: bool) -> str:
     system = (
         "Choose the best option. Reply with ONLY the letter (A, B, C, or D)."
         if multiple_choice
-        else "Reply ONLY with the final answer (short). No explanation."
+        else "Reply ONLY with the final answer (short). No explanation or reasoning."
     )
 
     payload = {
@@ -58,6 +60,8 @@ def call_llm(prompt: str, multiple_choice: bool) -> str:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
+        "max_tokens": 16 if multiple_choice else 128,
+
     }
 
     try:
@@ -116,12 +120,12 @@ def build_answers(questions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         # Store the model output in the required {"output": "..."} structure
         answers.append({"output": prediction})
 
-        # Progress every 50 questions
-    if idx % 50 == 0:
-        elapsed = time.time() - start
-        rate = idx / elapsed if elapsed > 0 else 0
-        remaining = (len(questions) - idx) / rate if rate > 0 else float("inf")
-        print(f"[{idx}/{len(questions)}] ~{rate:.2f} q/s, ETA ~{remaining/60:.1f} min")
+        # Progress every 25 questions
+        if idx % 25 == 0:
+            elapsed = time.time() - start
+            rate = idx / elapsed if elapsed > 0 else 0
+            remaining = (len(questions) - idx) / rate if rate > 0 else float("inf")
+            print(f"[{idx}/{len(questions)}] ~{rate:.2f} q/s, ETA ~{remaining/60:.1f} min")
 
     # Return the full list of predictions to be written into the output JSON
     return answers
@@ -151,6 +155,8 @@ def validate_results(
 
 def main() -> None:
     questions = load_questions(INPUT_PATH)
+    print(f"Loaded {len(questions)} questions. Starting inference...", flush=True)
+
     answers = build_answers(questions)
 
     with OUTPUT_PATH.open("w") as fp:
