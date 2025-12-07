@@ -86,17 +86,36 @@ def load_questions(path: Path) -> List[Dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError("Input file must contain a list of question objects.")
     return data
-
-
 def build_answers(questions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    answers = []
+    """
+    My agent loop:
+    - 1 API call per question
+    - no external tools
+    - produces a string in {"output": "..."} format per question
+    """
+    # Initialize an empty list to store all generated model outputs
+    answers: List[Dict[str, str]] = []
+
+    # Iterate through each question object while keeping track of question index
     for idx, question in enumerate(questions, start=1):
-        # Example: assume you have an agent loop that produces an answer string.
-        # real_answer = agent_loop(question["input"])
-        # answers.append({"output": real_answer})
-        placeholder_answer = f"Placeholder answer for question {idx}"
-        answers.append({"output": placeholder_answer})
+        # Extract the question text from the JSON dictionary
+        # Defaults to an empty string if "input" key is missing
+        qtext = question.get("input", "")
+
+        # Heuristic: most dataset MCQs contain "A." "B." "C." "D."
+        # This simple rule helps the model distinguish between open-ended and MCQ formats
+        multiple_choice = all(opt in qtext for opt in ["A.", "B.", "C.", "D."])
+
+        # Call the LLM with the question text
+        # The flag multiple_choice hints to the model how to format its reasoning/answering approach
+        prediction = call_llm(qtext, multiple_choice=multiple_choice)
+
+        # Store the model output in the required {"output": "..."} structure
+        answers.append({"output": prediction})
+
+    # Return the full list of predictions to be written into the output JSON
     return answers
+
 
 
 def validate_results(
