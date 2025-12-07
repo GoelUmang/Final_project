@@ -141,6 +141,80 @@ def build_system_prompt(qtype: str) -> str:
     # Default case: short free-text answers permitted, but no reasoning.
     return "Output ONLY the final answer as plain text (one short line). No reasoning."
 
+def normalize_output(ans: str, qtype: str) -> str:
+    """
+    Enforce the autograder requirement:
+    - string only
+    - final answer only
+    - strict formats for mcq/yesno
+
+    This function cleans the model's raw output, forces the correct
+    format depending on question type, and trims excessive text.
+    """
+    # Normalize basic whitespace and strip quotes the model might return
+    a = (ans or "").strip()
+    a = a.strip().strip('"').strip("'")
+    a = re.sub(r"\s+", " ", a)  # single line normalization
+
+    # --- MCQ: force a single A–D letter ---
+    if qtype == "mcq":
+        # Extract the first valid standalone MCQ letter
+        m = re.search(r"\b([A-D])\b", a.upper())
+        # Default to "A" if the model fails to provide a valid option
+        return m.group(1) if m else "A"
+
+    # --- Yes/No questions ---
+    if qtype == "yesno":
+        # Accept flexible outputs but normalize to Yes/No strictly
+        if a.lower().startswith("y"):
+            return "Yes"
+        if a.lower().startswith("n"):
+            return "No"
+        # If the model outputs something invalid
+        return "N/A"
+
+    # Empty output handling for all other types
+    if not a:
+        return "N/A"
+
+    # For open/math/context QA, return trimmed plain output
+    # (5000 chars cap ensures we never overshoot limits)
+    if len(a) > 5000:
+        a = a[:5000]
+
+    return a
+
+
+def looks_suspicious(ans: str, qtype: str) -> bool:
+    """
+    Decide if we need a second “format correction” call.
+
+    This checks whether the model obeyed the required answer format
+    (e.g., MCQ letter only, no reasoning, no long paragraphs).
+    """
+    a = (ans or "").strip()
+
+    # --- MCQ: must be exactly one letter A–D ---
+    if qtype == "mcq":
+        return a not in {"A", "B", "C", "D"}
+
+    # --- Yes/No: must be strictly Yes or No ---
+    if qtype == "yesno":
+        return a not in {"Yes", "No"}
+
+    # For other question types:
+    # Reject empty outputs or suspiciously long answers
+    if not a or len(a) > 250:
+        return True
+
+    # Block reasoning/explanation leakage for open/math/context QA
+    forbidden = ["because", "let's", "step", "reasoning", "tool", "trace"]
+    if any(w in a.lower() for w in forbidden):
+        return True
+
+    # Otherwise the answer looks acceptable
+    return False
+
 
 def call_llm(prompt: str, multiple_choice: bool) -> str:
     """
