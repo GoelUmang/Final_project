@@ -29,6 +29,28 @@ MODEL_NAME = os.getenv("MODEL_NAME", "bens_model")
 INPUT_PATH = Path("cse_476_final_project_test_data.json")
 OUTPUT_PATH = Path("cse_476_final_project_answers.json")
 
+# ---- Simple cache (in-memory + optional disk) ----
+CACHE_PATH = Path(".answer_cache.json")
+CACHE: Dict[str, str] = {}
+
+def load_cache() -> None:
+    """Load cached answers from disk (if present)."""
+    global CACHE
+    if CACHE_PATH.exists():
+        try:
+            CACHE = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            if not isinstance(CACHE, dict):
+                CACHE = {}
+        except Exception:
+            CACHE = {}
+
+def save_cache() -> None:
+    """Persist cache to disk so I can resume long runs without losing progress."""
+    try:
+        CACHE_PATH.write_text(json.dumps(CACHE, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
 
 
 def call_llm(prompt: str, multiple_choice: bool) -> str:
